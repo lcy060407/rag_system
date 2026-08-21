@@ -506,10 +506,17 @@ class QuizChoice(BaseModel):
 
 class QuizQuestion(BaseModel):
     id: str
+    question_type: str = "single"        
+    difficulty: str = "medium"          
+    knowledge_point: str = ""
     prompt: str
     choices: list[QuizChoice] = Field(default_factory=list)
-    correct_choice_id: str
-    explanation: str
+    correct_choice_id: str = ""                            
+    correct_choice_ids: list[str] = Field(default_factory=list) 
+    standard_answers: list[str] = Field(default_factory=list)
+    reference_answer: str = ""
+    scoring_points: list[str] = Field(default_factory=list)
+    explanation: str = ""
     source_message_ids: list[str] = Field(default_factory=list)
     related_images: list[ImageAssetPublic] = Field(default_factory=list)
 
@@ -527,11 +534,16 @@ class QuizGenerateRequest(BaseModel):
     conversation_id: str | None = Field(default=None, min_length=1)
     document_ids: list[str] = Field(default_factory=list)
     count: int = 3
+    question_types: list[str] = Field(default_factory=lambda: ["single"])
+    difficulty: str = "mixed"            # easy/medium/hard/mixed
+    mode: str = "auto"                   # auto/conversation/wrong_book
 
 
 class QuizSubmitAnswer(BaseModel):
     question_id: str = Field(min_length=1)
-    selected_choice_id: str = Field(min_length=1)
+    selected_choice_id: str | None = None                       
+    selected_choice_ids: list[str] = Field(default_factory=list)  
+    text_answer: str | None = None                               
 
 
 class QuizSubmitRequest(BaseModel):
@@ -541,15 +553,20 @@ class QuizSubmitRequest(BaseModel):
 class QuizQuestionResult(BaseModel):
     question: QuizQuestion
     selected_choice_id: str | None = None
-    is_correct: bool
-    correct_choice_id: str
-    explanation: str
+    selected_choice_ids: list[str] = Field(default_factory=list)
+    text_answer: str | None = None
+    is_correct: bool | None = None      
+    score: float | None = None           
+    correct_choice_id: str = ""
+    explanation: str = ""
+    grading_feedback: dict[str, Any] = Field(default_factory=dict)
 
 
 class QuizSubmitResponse(BaseModel):
     session_id: str
     correct_count: int
     total_count: int
+    total_score: float | None = None
     results: list[QuizQuestionResult] = Field(default_factory=list)
 
 
@@ -559,15 +576,21 @@ class WrongQuestion(BaseModel):
     quiz_session_id: str
     conversation_id: str
     question_id: str
+    question_type: str = "single"
+    difficulty: str = "medium"
+    knowledge_point: str = ""
     prompt: str
     choices: list[QuizChoice] = Field(default_factory=list)
-    selected_choice_id: str
-    correct_choice_id: str
-    explanation: str
+    selected_choice_id: str = ""
+    correct_choice_id: str = ""
+    text_answer: str | None = None
+    score: float | None = None
+    explanation: str = ""
     source_message_ids: list[str] = Field(default_factory=list)
     related_images: list[ImageAssetPublic] = Field(default_factory=list)
     created_at: str
     reviewed_at: str | None = None
+
 
 
 for _model in (ProfilePromptContextResponse, PersonalizationPreviewResponse):
