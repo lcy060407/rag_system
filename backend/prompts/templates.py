@@ -163,3 +163,135 @@ def build_document_prompt(
         f"回答规则：{response_rule}\n\n"
         f"图片引用规则：{inline_image_rules}"
     )
+# ============================================================
+# Quiz 多题型出题与评分模板
+# ============================================================
+
+QUIZ_TYPE_INSTRUCTIONS = {
+    "single": (
+        "生成单选题：4 个选项（A、B、C、D），correct_choice_id 为唯一正确项。"
+    ),
+    "multi": (
+        "生成多选题：4-5 个选项，correct_choice_ids 包含 2-3 个正确项，"
+        "explanation 要逐项说明每个选项为什么对或错。"
+    ),
+    "judge": (
+        "生成判断题：choices 固定为 [{\"id\": \"A\", \"text\": \"正确\"}, "
+        "{\"id\": \"B\", \"text\": \"错误\"}]，correct_choice_id 为 A 或 B。"
+    ),
+    "fill": (
+        "生成填空题：题干中用 【1】【2】 标记空位；standard_answers 按空位顺序给出"
+        "标准答案，每个空位可包含多个可接受的同义表述，用 | 分隔。"
+    ),
+    "calc": (
+        "生成计算题：题干给出已知条件和求解目标；reference_answer 写完整解题步骤；"
+        "scoring_points 按步骤拆分得分点（例如：正确列出公式、正确代入数值、"
+        "计算结果正确）。"
+    ),
+    "short": (
+        "生成简答题：reference_answer 给出 150 字以内的参考答案；"
+        "scoring_points 列出 3-5 个得分要点。"
+    ),
+    "essay": (
+        "生成论述题：要求综合分析或知识迁移；reference_answer 给出答题框架；"
+        "scoring_points 按论点维度拆分。"
+    ),
+}
+
+DIFFICULTY_INSTRUCTIONS = {
+    "easy": "考查记忆与概念识别，答案可直接在材料中找到。",
+    "medium": "考查理解与应用，需要对材料做一步推理或套用公式。",
+    "hard": "考查分析与综合，需要结合多个知识点或辨析易混淆概念。",
+}
+
+VALID_QUIZ_TYPES = tuple(QUIZ_TYPE_INSTRUCTIONS.keys())
+VALID_DIFFICULTIES = ("easy", "medium", "hard", "mixed")
+
+QUIZ_JSON_FORMAT = """
+返回 JSON（不要输出 Markdown 代码块标记），格式为：
+{
+  "questions": [
+    {
+      "question_type": "题型，必须是要求的题型之一",
+      "difficulty": "easy/medium/hard",
+      "knowledge_point": "该题考查的知识点名称",
+      "prompt": "题干",
+      "choices": [{"id": "A", "text": "选项"}],   // 仅选择/判断题
+      "correct_choice_id": "A",                    // 仅单选/判断题
+      "correct_choice_ids": ["A", "C"],            // 仅多选题
+      "standard_answers": ["答案1|同义表述"],        // 仅填空题
+      "reference_answer": "参考答案",               // 仅计算/简答/论述题
+      "scoring_points": ["得分点1", "得分点2"],      // 仅计算/简答/论述题
+      "explanation": "解析",
+      "source_message_ids": ["材料id"]
+    }
+  ]
+}
+不涉及的字段填空值：字符串填空串 ""，列表填空列表 []。
+"""
+
+def build_quiz_prompt(
+    material: str,
+    count: int,
+    question_types: list[str] | None = None,
+    difficulty: str = "mixed",
+) -> str:
+    """拼装多题型出题 prompt，供 quiz_service 调用。"""
+    types = [t for t in (question_types or ["single"]) if t in QUIZ_TYPE_INSTRUCTIONS]
+    if not types:
+        types = ["single"]
+
+    type_lines = "\n".join(
+        f"- {QUIZ_TYPE_INSTRUCTIONS[t]}" for t in types
+    )
+    if difficulty in DIFFICULTY_INSTRUCTIONS:
+        difficulty_line = DIFFICULTY_INSTRUCTIONS[difficulty]
+    else:
+        difficulty_line = (
+            "混合难度：" + "；".join(DIFFICULTY_INSTRUCTIONS.values())
+        )
+
+    return f"""
+请基于下面的学习材料，生成 {count} 道中文练习题，用于检查用户是否理解这些材料。
+
+题型要求（{"、".join(types)}）：
+{type_lines}
+
+难度要求：
+{difficulty_line}
+
+通用要求：
+- 优先考查历史学习回答、历史 quiz 记录和错题记录中涉及的知识点、结论、条件、推理或易错点。
+- 只考查学习材料中已经出现的信息，不引入外部事实。
+- 不要考查用户要求生成几道题、输出格式、用户偏好、界面设置、操作习惯、记忆状态或本系统功能。
+- 如果材料来自历史 quiz 或错题记录，应围绕其中的学科知识重新出题，不要考"这条历史记录写了什么"。
+- explanation 要说明正确答案为什么对，并指出它对应的材料依据。
+- source_message_ids 只能使用学习材料中出现过的 id。
+{QUIZ_JSON_FORMAT}
+学习材料：
+{material}
+""".strip()
+
+
+SUBJECTIVE_GRADING_PROMPT = """
+你是严格但公正的中文助教。请根据评分要点为学生答案打分。
+
+题目：{prompt}
+参考答案：{reference_answer}
+评分要点：{scoring_points}
+学生答案：{student_answer}
+
+要求：
+- 逐条判断每个评分要点是否被覆盖；允许同义表达，不要求逐字一致。
+- 指出学生答案中的错误之处，并给出一句具体的改进建议。
+- score 为 0-100 的整数，按评分要点覆盖比例给分。
+
+返回 JSON（不要输出 Markdown 代码块标记）：
+{{
+  "score": 0,
+  "matched_points": ["已覆盖的要点"],
+  "missed_points": ["未覆盖的要点"],
+  "error_analysis": "错误分析",
+  "suggestion": "改进建议"
+}}
+""".strip()
