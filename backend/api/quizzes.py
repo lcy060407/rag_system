@@ -31,7 +31,7 @@ async def submit_quiz_answers(
     session_id: str,
     payload: QuizSubmitRequest,
 ) -> QuizSubmitResponse:
-    return submit_quiz(session_id, payload)
+    return await submit_quiz(session_id, payload)
 
 
 @router.get("/api/wrong-questions", response_model=list[WrongQuestion])

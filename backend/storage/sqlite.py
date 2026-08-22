@@ -228,6 +228,11 @@ def init_metadata_db() -> None:
         _ensure_column(connection, "wrong_questions", "source_message_ids_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(connection, "wrong_questions", "related_images_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(connection, "wrong_questions", "reviewed_at", "TEXT")
+        _ensure_column(connection, "wrong_questions", "question_type", "TEXT DEFAULT 'single'")
+        _ensure_column(connection, "wrong_questions", "difficulty", "TEXT DEFAULT 'medium'")
+        _ensure_column(connection, "wrong_questions", "knowledge_point", "TEXT")
+        _ensure_column(connection, "wrong_questions", "text_answer", "TEXT")
+        _ensure_column(connection, "wrong_questions", "score", "REAL")
         connection.commit()
 
 

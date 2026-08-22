@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import random
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from backend.schemas import (
     QuizQuestion,
     QuizQuestionResult,
     QuizSession,
+    QuizSubmitAnswer,
     QuizSubmitRequest,
     QuizSubmitResponse,
     WrongQuestion,
@@ -32,6 +34,12 @@ from backend.services.conversation_service import (
 )
 from backend.services.profile_service import get_profile
 from backend.storage.sqlite import metadata_connection
+from backend.prompts.templates import (
+    SUBJECTIVE_GRADING_PROMPT,
+    VALID_QUIZ_TYPES,
+    build_quiz_prompt,
+)
+
 
 CHOICE_IDS = ("A", "B", "C", "D")
 MESSAGE_ID_PATTERN = re.compile(r"\bmsg_[A-Za-z0-9._:-]+\b")
@@ -87,14 +95,17 @@ class QuizSource:
 
 async def generate_quiz(payload: QuizGenerateRequest) -> QuizSession:
     count = _quiz_count(payload.count)
+    question_types = _normalize_question_types(payload.question_types)
+    difficulty = _normalize_difficulty(payload.difficulty)
     sources, title, source_conversation_id = _resolve_quiz_sources(payload)
     if not sources:
         raise HTTPException(
             status_code=400,
             detail="还没有可用于出题的对话或记忆。请先完成问答，或在记忆审核中接受至少一条记忆。",
         )
-
-    questions = await _generate_questions_with_llm(sources, count)
+    questions = await _generate_questions_with_llm(
+        sources, count, question_types=question_types, difficulty=difficulty
+    )
     if len(questions) < count:
         fallback = _fallback_questions(sources, count)
         existing_prompts = {question.prompt for question in questions}
@@ -106,6 +117,7 @@ async def generate_quiz(payload: QuizGenerateRequest) -> QuizSession:
         raise HTTPException(status_code=400, detail="当前材料还不足以生成小测验。")
 
     questions = _attach_related_images_to_questions(questions, sources)
+    questions = [_randomize_choices(question) for question in questions]
     profile_id = _profile_id()
     now = _utc_now()
     session = QuizSession(
@@ -136,27 +148,24 @@ async def generate_quiz(payload: QuizGenerateRequest) -> QuizSession:
     return session
 
 
-def submit_quiz(session_id: str, payload: QuizSubmitRequest) -> QuizSubmitResponse:
+async def submit_quiz(session_id: str, payload: QuizSubmitRequest) -> QuizSubmitResponse:
     session = read_quiz_session(session_id)
     answers_by_question = {
-        answer.question_id: answer.selected_choice_id for answer in payload.answers
+        answer.question_id: answer for answer in payload.answers
     }
     results: list[QuizQuestionResult] = []
     correct_count = 0
+    subjective_score_sum = 0.0
+    subjective_count = 0
     for question in session.questions:
-        selected_choice_id = answers_by_question.get(question.id)
-        is_correct = selected_choice_id == question.correct_choice_id
-        if is_correct:
+        answer = answers_by_question.get(question.id)
+        result = await _grade_answer(question, answer)
+        results.append(result)
+        if result.is_correct:
             correct_count += 1
-        results.append(
-            QuizQuestionResult(
-                question=question,
-                selected_choice_id=selected_choice_id,
-                is_correct=is_correct,
-                correct_choice_id=question.correct_choice_id,
-                explanation=question.explanation,
-            )
-        )
+        if result.score is not None:
+            subjective_score_sum += result.score
+            subjective_count += 1
 
     now = _utc_now()
     profile_id = _profile_id()
@@ -183,16 +192,21 @@ def submit_quiz(session_id: str, payload: QuizSubmitRequest) -> QuizSubmitRespon
         for result in results:
             if result.is_correct:
                 continue
+            if result.is_correct is None and (
+                result.score is None or result.score >= 60
+            ):
+                continue  # 主观题 60 分以上不记入错题本
             question = result.question
             connection.execute(
                 """
                 INSERT INTO wrong_questions (
                     id, profile_id, quiz_session_id, conversation_id, question_id,
+                    question_type, difficulty, knowledge_point,
                     prompt, choices_json, selected_choice_id, correct_choice_id,
-                    explanation, source_message_ids_json, related_images_json,
-                    created_at, reviewed_at
+                    text_answer, score, explanation, source_message_ids_json,
+                    related_images_json, created_at, reviewed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     _new_id("wrong"),
@@ -200,10 +214,15 @@ def submit_quiz(session_id: str, payload: QuizSubmitRequest) -> QuizSubmitRespon
                     session.id,
                     session.conversation_id,
                     question.id,
+                    question.question_type,
+                    question.difficulty,
+                    question.knowledge_point,
                     question.prompt,
                     _json_dumps([_model_dump(choice) for choice in question.choices]),
                     result.selected_choice_id or "",
                     question.correct_choice_id,
+                    result.text_answer or "",
+                    result.score,
                     question.explanation,
                     _json_dumps(question.source_message_ids),
                     _json_dumps(
@@ -220,8 +239,14 @@ def submit_quiz(session_id: str, payload: QuizSubmitRequest) -> QuizSubmitRespon
         session_id=session.id,
         correct_count=correct_count,
         total_count=len(session.questions),
+        total_score=(
+            round(subjective_score_sum / subjective_count, 1)
+            if subjective_count
+            else None
+        ),
         results=results,
     )
+
 
 
 def read_quiz_session(session_id: str) -> QuizSession:
@@ -723,6 +748,9 @@ def _memory_source_text(row: dict[str, Any]) -> str:
 async def _generate_questions_with_llm(
     sources: list[QuizSource],
     count: int,
+    *,
+    question_types: list[str] | None = None,
+    difficulty: str = "mixed",
 ) -> list[QuizQuestion]:
     if not as_bool(os.getenv("ENABLE_LLM_QUIZ"), True):
         return []
@@ -731,9 +759,9 @@ async def _generate_questions_with_llm(
 
         llm_func, _vision_func = build_model_functions()
         raw = await llm_func(
-            _quiz_prompt(sources, count),
+            _quiz_prompt(sources, count, question_types, difficulty),
             system_prompt=(
-                "你是严谨的中文助教，只能根据给定学习材料生成复习选择题。"
+                "你是严谨的中文助教，只能根据给定学习材料生成练习题。"
                 "必须返回合法 JSON，不要输出 Markdown。"
             ),
             temperature=0.2,
@@ -746,44 +774,17 @@ async def _generate_questions_with_llm(
     except Exception:
         return []
 
-
-def _quiz_prompt(sources: list[QuizSource], count: int) -> str:
+def _quiz_prompt(
+    sources: list[QuizSource],
+    count: int,
+    question_types: list[str] | None = None,
+    difficulty: str = "mixed",
+) -> str:
     material = "\n".join(
         f"[{source.id}][{source.role}] {_clip(source.content, 700)}"
         for source in sources[-12:]
     )
-    return f"""
-请基于下面的学习材料，生成 {count} 道中文单选题，用于检查用户是否理解这些材料。
-
-要求：
-- 优先考查历史学习回答、历史 quiz 记录和错题记录中涉及的知识点、结论、条件、推理或易错点。
-- 只考查学习材料中已经出现的信息，不引入外部事实。
-- 不要考查用户要求生成几道题、输出格式、用户偏好、界面设置、操作习惯、记忆状态或本系统功能。
-- 如果材料来自历史 quiz 或错题记录，应围绕其中的学科知识重新出题，不要考“这条历史记录写了什么”。
-- 每题 4 个选项，选项 id 固定为 A、B、C、D。
-- explanation 要说明正确项为什么对，并指出它对应的材料依据。
-- source_message_ids 只能使用学习材料中出现过的 id。
-- 返回 JSON，格式为：
-{{
-  "questions": [
-    {{
-      "prompt": "题干",
-      "choices": [
-        {{"id": "A", "text": "选项"}},
-        {{"id": "B", "text": "选项"}},
-        {{"id": "C", "text": "选项"}},
-        {{"id": "D", "text": "选项"}}
-      ],
-      "correct_choice_id": "A",
-      "explanation": "解析",
-      "source_message_ids": ["msg_x"]
-    }}
-  ]
-}}
-
-学习材料：
-{material}
-""".strip()
+    return build_quiz_prompt(material, count, question_types, difficulty)
 
 
 def _questions_from_llm_text(
@@ -815,28 +816,80 @@ def _normalize_question(
 ) -> QuizQuestion | None:
     prompt = _required_text(raw_question.get("prompt"))
     explanation = _required_text(raw_question.get("explanation"))
-    if not prompt or not explanation:
+    if not prompt:
         return None
 
-    raw_choices = raw_question.get("choices")
-    if not isinstance(raw_choices, list):
-        return None
+    question_type = str(raw_question.get("question_type") or "single").strip()
+    if question_type not in VALID_QUIZ_TYPES:
+        question_type = "single"
+    difficulty = str(raw_question.get("difficulty") or "medium").strip()
+    if difficulty not in {"easy", "medium", "hard"}:
+        difficulty = "medium"
+    knowledge_point = _required_text(raw_question.get("knowledge_point"))[:100]
+
     choices: list[QuizChoice] = []
-    for index, raw_choice in enumerate(raw_choices[:4]):
-        if not isinstance(raw_choice, dict):
-            continue
-        choice_id = str(raw_choice.get("id") or CHOICE_IDS[index]).strip().upper()
-        if choice_id not in CHOICE_IDS:
-            choice_id = CHOICE_IDS[index]
-        text = _required_text(raw_choice.get("text"))
-        if text:
-            choices.append(QuizChoice(id=choice_id, text=text[:400]))
+    correct_choice_id = ""
+    correct_choice_ids: list[str] = []
+    standard_answers: list[str] = []
+    reference_answer = ""
+    scoring_points: list[str] = []
 
-    if len(choices) < 2:
-        return None
-    correct_choice_id = str(raw_question.get("correct_choice_id") or "").strip().upper()
-    if correct_choice_id not in {choice.id for choice in choices}:
-        return None
+    if question_type in {"single", "multi", "judge"}:
+        raw_choices = raw_question.get("choices")
+        if not isinstance(raw_choices, list):
+            return None
+        for index, raw_choice in enumerate(raw_choices[:5]):
+            if not isinstance(raw_choice, dict):
+                continue
+            choice_id = str(raw_choice.get("id") or "").strip().upper()
+            text = _required_text(raw_choice.get("text"))
+            if not text:
+                continue
+            if not re.fullmatch(r"[A-E]", choice_id):
+                choice_id = "ABCDE"[len(choices)]
+            choices.append(QuizChoice(id=choice_id, text=text[:400]))
+        if question_type == "judge":
+            choices = [
+                QuizChoice(id="A", text="正确"),
+                QuizChoice(id="B", text="错误"),
+            ]
+        if len(choices) < 2:
+            return None
+        valid_ids = {choice.id for choice in choices}
+        if question_type == "multi":
+            raw_ids = raw_question.get("correct_choice_ids")
+            if not isinstance(raw_ids, list):
+                return None
+            correct_choice_ids = sorted(
+                {str(item).strip().upper() for item in raw_ids} & valid_ids
+            )
+            if len(correct_choice_ids) < 2:
+                return None
+            correct_choice_id = correct_choice_ids[0]
+        else:
+            correct_choice_id = str(
+                raw_question.get("correct_choice_id") or ""
+            ).strip().upper()
+            if correct_choice_id not in valid_ids:
+                return None
+    elif question_type == "fill":
+        raw_answers = raw_question.get("standard_answers")
+        if not isinstance(raw_answers, list):
+            return None
+        standard_answers = [
+            _required_text(item) for item in raw_answers if _required_text(item)
+        ][:6]
+        if not standard_answers:
+            return None
+    else:  # calc / short / essay 主观题
+        reference_answer = _required_text(raw_question.get("reference_answer"))
+        raw_points = raw_question.get("scoring_points")
+        if isinstance(raw_points, list):
+            scoring_points = [
+                _required_text(item) for item in raw_points if _required_text(item)
+            ][:8]
+        if not reference_answer or not scoring_points:
+            return None
 
     source_ids = []
     raw_source_ids = raw_question.get("source_message_ids")
@@ -849,12 +902,189 @@ def _normalize_question(
 
     return QuizQuestion(
         id=_new_id("qq"),
+        question_type=question_type,
+        difficulty=difficulty,
+        knowledge_point=knowledge_point,
         prompt=prompt[:500],
         choices=choices,
         correct_choice_id=correct_choice_id,
+        correct_choice_ids=correct_choice_ids,
+        standard_answers=standard_answers,
+        reference_answer=reference_answer[:2000],
+        scoring_points=scoring_points,
         explanation=explanation[:800],
         source_message_ids=source_ids,
     )
+
+def _normalize_question_types(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return ["single"]
+    result: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text in VALID_QUIZ_TYPES and text not in result:
+            result.append(text)
+    return result or ["single"]
+
+def _normalize_difficulty(value: Any) -> str:
+    text = str(value or "mixed").strip()
+    return text if text in {"easy", "medium", "hard", "mixed"} else "mixed"
+
+def _randomize_choices(question: QuizQuestion) -> QuizQuestion:
+    if question.question_type not in {"single", "multi"} or len(question.choices) < 3:
+        return question
+    shuffled = list(question.choices)
+    random.shuffle(shuffled)
+    new_ids = "ABCDE"
+    id_map: dict[str, str] = {}
+    new_choices: list[QuizChoice] = []
+    for index, choice in enumerate(shuffled):
+        new_id = new_ids[index]
+        id_map[choice.id] = new_id
+        new_choices.append(QuizChoice(id=new_id, text=choice.text))
+    data = _model_dump(question)
+    data["choices"] = [_model_dump(choice) for choice in new_choices]
+    data["correct_choice_id"] = id_map.get(
+        question.correct_choice_id, question.correct_choice_id
+    )
+    data["correct_choice_ids"] = [
+        id_map.get(item, item) for item in question.correct_choice_ids
+    ]
+    return QuizQuestion(**data)
+
+async def _grade_answer(
+    question: QuizQuestion,
+    answer: QuizSubmitAnswer | None,
+) -> QuizQuestionResult:
+    selected_choice_id = answer.selected_choice_id if answer else None
+    selected_choice_ids = list(answer.selected_choice_ids) if answer else []
+    text_answer = answer.text_answer if answer else None
+
+    if question.question_type == "multi":
+        is_correct = bool(selected_choice_ids) and set(selected_choice_ids) == set(
+            question.correct_choice_ids
+        )
+        return QuizQuestionResult(
+            question=question,
+            selected_choice_ids=selected_choice_ids,
+            is_correct=is_correct,
+            correct_choice_id=question.correct_choice_id,
+            explanation=question.explanation,
+        )
+    if question.question_type in {"single", "judge"}:
+        is_correct = (
+            bool(selected_choice_id)
+            and selected_choice_id == question.correct_choice_id
+        )
+        return QuizQuestionResult(
+            question=question,
+            selected_choice_id=selected_choice_id,
+            is_correct=is_correct,
+            correct_choice_id=question.correct_choice_id,
+            explanation=question.explanation,
+        )
+    if question.question_type == "fill":
+        is_correct = _fill_answer_matches(text_answer, question.standard_answers)
+        return QuizQuestionResult(
+            question=question,
+            text_answer=text_answer,
+            is_correct=is_correct,
+            explanation=question.explanation,
+        )
+    grading = await _grade_subjective(question, text_answer or "")
+    return QuizQuestionResult(
+        question=question,
+        text_answer=text_answer,
+        is_correct=None,
+        score=grading.get("score"),
+        explanation=question.explanation,
+        grading_feedback=grading,
+    )
+
+def _normalize_fill_text(text: str) -> str:
+    text = str(text or "").strip().lower()
+    for old, new in (("（", "("), ("）", ")"), ("，", ","), ("。", ".")):
+        text = text.replace(old, new)
+    return "".join(text.split())
+
+def _fill_answer_matches(
+    text_answer: str | None,
+    standard_answers: list[str],
+) -> bool:
+    if not text_answer:
+        return False
+    parts = [p for p in re.split(r"[;；\n]+", text_answer) if p.strip()]
+    if len(parts) < len(standard_answers):
+        parts = [text_answer]
+    normalized_parts = [_normalize_fill_text(part) for part in parts]
+    for index, standard in enumerate(standard_answers):
+        accepted = [
+            _normalize_fill_text(item)
+            for item in str(standard).split("|")
+            if item.strip()
+        ]
+        student = normalized_parts[index] if index < len(normalized_parts) else ""
+        if student not in accepted:
+            return False
+    return True
+
+async def _grade_subjective(
+    question: QuizQuestion,
+    student_answer: str,
+) -> dict[str, Any]:
+    fallback: dict[str, Any] = {
+        "score": None,
+        "matched_points": [],
+        "missed_points": [],
+        "error_analysis": "",
+        "suggestion": "",
+        "grading_error": True,
+    }
+    if not student_answer.strip():
+        return {
+            **fallback,
+            "score": 0,
+            "error_analysis": "未作答。",
+            "grading_error": False,
+        }
+    if not as_bool(os.getenv("ENABLE_LLM_QUIZ"), True):
+        return fallback
+    try:
+        from backend.rag.factory import build_model_functions
+
+        llm_func, _vision_func = build_model_functions()
+        raw = await llm_func(
+            SUBJECTIVE_GRADING_PROMPT.format(
+                prompt=question.prompt,
+                reference_answer=question.reference_answer,
+                scoring_points="；".join(question.scoring_points),
+                student_answer=student_answer,
+            ),
+            system_prompt=(
+                "你是严格但公正的中文助教。必须返回合法 JSON，不要输出 Markdown。"
+            ),
+            temperature=0,
+        )
+        parsed = _parse_json_object(response_content_to_text(raw))
+        score = parsed.get("score")
+        try:
+            score = max(0, min(100, int(score)))
+        except (TypeError, ValueError):
+            score = None
+        return {
+            "score": score,
+            "matched_points": [
+                str(item) for item in parsed.get("matched_points") or []
+            ][:8],
+            "missed_points": [
+                str(item) for item in parsed.get("missed_points") or []
+            ][:8],
+            "error_analysis": str(parsed.get("error_analysis") or ""),
+            "suggestion": str(parsed.get("suggestion") or ""),
+        }
+    except Exception:
+        return fallback
+
 
 
 def _fallback_questions(sources: list[QuizSource], count: int) -> list[QuizQuestion]:
@@ -1007,16 +1237,22 @@ def _wrong_question_from_row(row: dict[str, Any]) -> WrongQuestion:
         quiz_session_id=str(row["quiz_session_id"]),
         conversation_id=str(row["conversation_id"]),
         question_id=str(row["question_id"]),
+        question_type=str(row.get("question_type") or "single"),
+        difficulty=str(row.get("difficulty") or "medium"),
+        knowledge_point=str(row.get("knowledge_point") or ""),
         prompt=str(row["prompt"]),
         choices=_choices_from_json(row.get("choices_json")),
         selected_choice_id=str(row.get("selected_choice_id") or ""),
-        correct_choice_id=str(row["correct_choice_id"]),
+        correct_choice_id=str(row.get("correct_choice_id") or ""),
+        text_answer=row.get("text_answer"),
+        score=row.get("score"),
         explanation=str(row.get("explanation") or ""),
         source_message_ids=source_message_ids,
         related_images=related_images,
         created_at=str(row["created_at"]),
         reviewed_at=row.get("reviewed_at"),
     )
+
 
 
 def _related_images_from_wrong_question_row(
@@ -1196,7 +1432,7 @@ def _optional_text(value: Any) -> str | None:
 
 
 def _quiz_count(value: int) -> int:
-    return max(1, min(int(value or 3), 5))
+    return max(1, min(int(value or 3), 15))
 
 
 def _require_id(value: str, label: str) -> str:
