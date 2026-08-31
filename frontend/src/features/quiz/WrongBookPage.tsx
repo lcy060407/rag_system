@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { quizApi } from "./api";
 import { choiceText, QuestionCard } from "./QuestionCard";
-import type { WrongQuestion } from "./types";
+import { QUIZ_TYPE_LABELS, type WrongQuestion } from "./types";
 
 type WrongBookFilter = "all" | "open" | "reviewed";
 
@@ -171,11 +171,15 @@ function WrongRecord({
   onMarkReviewed: () => void;
   onRemove: () => void;
 }) {
+  const typeLabel =
+    QUIZ_TYPE_LABELS[question.question_type] || QUIZ_TYPE_LABELS.single;
+
   return (
     <article className="wrong-record">
       <div className="wrong-record-heading">
         <div>
           <strong>{question.reviewed_at ? "已复习" : "待复习"}</strong>
+          <span>{typeLabel}</span>
           <span>{formatDateTime(question.created_at)}</span>
         </div>
         <div className="wrong-record-actions">
@@ -193,20 +197,34 @@ function WrongRecord({
       <QuestionCard
         question={{
           id: question.question_id,
+          question_type: question.question_type || "single",
+          difficulty: question.difficulty || "medium",
+          knowledge_point: question.knowledge_point || "",
           prompt: question.prompt,
           choices: question.choices,
           correct_choice_id: question.correct_choice_id,
+          correct_choice_ids: [],
+          standard_answers: [],
+          reference_answer: "",
+          scoring_points: [],
           explanation: question.explanation,
           source_message_ids: question.source_message_ids,
           related_images: question.related_images,
         }}
         index={index}
         selectedChoiceId={question.selected_choice_id}
+        textAnswer={question.text_answer || undefined}
         showAnswer
       />
 
       <p className="wrong-record-answer">
-        你的答案：{choiceText(question, question.selected_choice_id) || "未作答"}
+        你的答案：
+        {question.text_answer ||
+          choiceText(question, question.selected_choice_id) ||
+          "未作答"}
+        {typeof question.score === "number"
+          ? `（得分 ${question.score}/100）`
+          : ""}
       </p>
     </article>
   );
