@@ -2,6 +2,7 @@ import { request } from "@/lib/api";
 import type { ImageAssetPublic } from "@/types/api";
 import type { RelatedImage } from "@/types/chat";
 import type {
+  QuizGenerateOptions,
   QuizSession,
   QuizSubmitAnswer,
   QuizSubmitResponse,
@@ -13,16 +14,18 @@ export const quizApi = {
   generate: ({
     conversationId,
     documentIds,
-  }: {
-    conversationId?: string | null;
-    documentIds?: string[];
-  }) =>
+    questionTypes,
+    difficulty,
+    count,
+  }: QuizGenerateOptions) =>
     request<ApiQuizSession>("/api/quizzes/generate", {
       method: "POST",
       body: JSON.stringify({
         conversation_id: conversationId || null,
         document_ids: documentIds || [],
-        count: 3,
+        count: count ?? 5,
+        question_types: questionTypes?.length ? questionTypes : ["single"],
+        difficulty: difficulty || "mixed",
       }),
     }).then(normalizeQuizSession),
   submit: (sessionId: string, answers: QuizSubmitAnswer[]) =>

@@ -1,15 +1,29 @@
 "use client";
 
+import type { CSSProperties } from "react";
 import { MarkdownAnswer } from "@/components/chat/MarkdownAnswer";
 import { RelatedImages } from "@/components/chat/RelatedImages";
-import type { QuizChoice, QuizQuestion, QuizQuestionResult } from "./types";
+import {
+  QUIZ_DIFFICULTY_LABELS,
+  QUIZ_TYPE_LABELS,
+  type QuizChoice,
+  type QuizQuestion,
+  type QuizQuestionResult,
+} from "./types";
 
 type QuestionDisplay = Pick<
   QuizQuestion,
   | "id"
+  | "question_type"
+  | "difficulty"
+  | "knowledge_point"
   | "prompt"
   | "choices"
   | "correct_choice_id"
+  | "correct_choice_ids"
+  | "standard_answers"
+  | "reference_answer"
+  | "scoring_points"
   | "explanation"
   | "source_message_ids"
   | "related_images"
@@ -19,30 +33,84 @@ type QuestionCardProps = {
   question: QuestionDisplay;
   index: number;
   selectedChoiceId?: string;
+  selectedChoiceIds?: string[];
+  textAnswer?: string;
   result?: QuizQuestionResult;
   showAnswer?: boolean;
   isSavedToWrongBook?: boolean;
   onSelect?: (choiceId: string) => void;
+  onToggleChoice?: (choiceId: string) => void;
+  onTextChange?: (text: string) => void;
+};
+
+const CHOICE_TYPES = new Set(["single", "multi", "judge"]);
+const SUBJECTIVE_TYPES = new Set(["calc", "short", "essay"]);
+
+const badgeStyle: CSSProperties = {
+  display: "inline-block",
+  padding: "2px 10px",
+  marginRight: 6,
+  borderRadius: 999,
+  fontSize: 12,
+  background: "#eef3f1",
+  color: "#2f5d50",
+  border: "1px solid #d3e0da",
+};
+
+const textInputStyle: CSSProperties = {
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 8,
+  border: "1px solid #cfd8d3",
+  fontSize: 14,
+  fontFamily: "inherit",
+  boxSizing: "border-box",
 };
 
 export function QuestionCard({
   question,
   index,
   selectedChoiceId,
+  selectedChoiceIds,
+  textAnswer,
   result,
   showAnswer = false,
-  isSavedToWrongBook = Boolean(result && !result.is_correct),
+  isSavedToWrongBook,
   onSelect,
+  onToggleChoice,
+  onTextChange,
 }: QuestionCardProps) {
+  const questionType = question.question_type || "single";
+  const isChoiceType = CHOICE_TYPES.has(questionType);
+  const isSubjective = SUBJECTIVE_TYPES.has(questionType);
   const isAnswered = Boolean(result || showAnswer);
   const correctChoiceId = result?.correct_choice_id || question.correct_choice_id;
   const explanation = result?.explanation || question.explanation;
+  const score = result?.score ?? null;
+  const feedback = result?.grading_feedback;
+  const saved =
+    isSavedToWrongBook ??
+    Boolean(
+      result &&
+        (result.is_correct === false ||
+          (result.score != null && result.score < 60)),
+    );
 
   return (
     <article className="quiz-question">
-      {isSavedToWrongBook ? (
-        <div className="quiz-question-saved">已写入错题本</div>
-      ) : null}
+      {saved ? <div className="quiz-question-saved">已写入错题本</div> : null}
+
+      <div style={{ marginBottom: 8 }}>
+        <span style={badgeStyle}>{QUIZ_TYPE_LABELS[questionType] || "选择题"}</span>
+        {question.difficulty ? (
+          <span style={badgeStyle}>
+            {QUIZ_DIFFICULTY_LABELS[question.difficulty] || question.difficulty}
+          </span>
+        ) : null}
+        {question.knowledge_point ? (
+          <span style={badgeStyle}>知识点：{question.knowledge_point}</span>
+        ) : null}
+      </div>
 
       <div className="quiz-question-prompt">
         <span className="quiz-question-number">{index + 1}</span>
@@ -55,18 +123,108 @@ export function QuestionCard({
       <SourceReferences sourceIds={question.source_message_ids} />
       <RelatedImages images={question.related_images} />
 
-      <div className="quiz-choice-list">
-        {question.choices.map((choice) => (
-          <ChoiceButton
-            key={choice.id}
-            choice={choice}
-            correctChoiceId={correctChoiceId}
-            isAnswered={isAnswered}
-            selectedChoiceId={selectedChoiceId}
-            onSelect={onSelect}
-          />
-        ))}
-      </div>
+      {isChoiceType ? (
+        <div className="quiz-choice-list">
+          {question.choices.map((choice) => (
+            <ChoiceButton
+              key={choice.id}
+              choice={choice}
+              multi={questionType === "multi"}
+              correctChoiceIds={
+                questionType === "multi"
+                  ? question.correct_choice_ids
+                  : [correctChoiceId]
+              }
+              isAnswered={isAnswered}
+              isSelected={
+                questionType === "multi"
+                  ? Boolean(selectedChoiceIds?.includes(choice.id))
+                  : selectedChoiceId === choice.id
+              }
+              onSelect={questionType === "multi" ? onToggleChoice : onSelect}
+            />
+          ))}
+        </div>
+      ) : null}
+
+      {questionType === "fill" && !isAnswered ? (
+        <input
+          style={textInputStyle}
+          placeholder="填写答案（多个空用分号 ; 隔开）"
+          value={textAnswer || ""}
+          onChange={(event) => onTextChange?.(event.target.value)}
+        />
+      ) : null}
+
+      {isSubjective && !isAnswered ? (
+        <textarea
+          style={{ ...textInputStyle, minHeight: 120, resize: "vertical" }}
+          placeholder="在此作答，尽量写清关键步骤和要点"
+          value={textAnswer || ""}
+          onChange={(event) => onTextChange?.(event.target.value)}
+        />
+      ) : null}
+
+      {isAnswered && questionType === "fill" ? (
+        <div className="quiz-explanation">
+          <p>
+            <strong>你的答案：</strong>
+            {result?.text_answer || textAnswer || "（未作答）"}
+            {result?.is_correct ? " ✅" : " ❌"}
+          </p>
+          <p>
+            <strong>标准答案：</strong>
+            {question.standard_answers.join("；") || "暂无"}
+          </p>
+        </div>
+      ) : null}
+
+      {isAnswered && isSubjective ? (
+        <div className="quiz-explanation">
+          <p>
+            <strong>你的答案：</strong>
+            {result?.text_answer || textAnswer || "（未作答）"}
+          </p>
+          {typeof score === "number" ? (
+            <p>
+              <strong>得分：{score} / 100</strong>
+            </p>
+          ) : null}
+          {feedback?.matched_points?.length ? (
+            <p>
+              <strong>已覆盖要点：</strong>
+              {feedback.matched_points.join("；")}
+            </p>
+          ) : null}
+          {feedback?.missed_points?.length ? (
+            <p>
+              <strong>遗漏要点：</strong>
+              {feedback.missed_points.join("；")}
+            </p>
+          ) : null}
+          {feedback?.error_analysis ? (
+            <p>
+              <strong>错误分析：</strong>
+              {feedback.error_analysis}
+            </p>
+          ) : null}
+          {feedback?.suggestion ? (
+            <p>
+              <strong>改进建议：</strong>
+              {feedback.suggestion}
+            </p>
+          ) : null}
+          {question.reference_answer ? (
+            <>
+              <strong>参考答案</strong>
+              <MarkdownAnswer
+                content={question.reference_answer}
+                relatedImages={question.related_images}
+              />
+            </>
+          ) : null}
+        </div>
+      ) : null}
 
       {isAnswered ? (
         <div className="quiz-explanation">
@@ -83,21 +241,27 @@ export function QuestionCard({
 
 function ChoiceButton({
   choice,
-  correctChoiceId,
+  multi,
+  correctChoiceIds,
   isAnswered,
-  selectedChoiceId,
+  isSelected,
   onSelect,
 }: {
   choice: QuizChoice;
-  correctChoiceId: string;
+  multi: boolean;
+  correctChoiceIds: string[];
   isAnswered: boolean;
-  selectedChoiceId?: string;
+  isSelected: boolean;
   onSelect?: (choiceId: string) => void;
 }) {
-  const isSelected = selectedChoiceId === choice.id;
-  const isCorrect = isAnswered && choice.id === correctChoiceId;
+  const isCorrect = isAnswered && correctChoiceIds.includes(choice.id);
   const isWrongSelection = isAnswered && isSelected && !isCorrect;
-  const resultLabel = isCorrect ? "正确答案" : isWrongSelection ? "你的选择" : "";
+  const isMissed = isAnswered && multi && isCorrect && !isSelected;
+  const resultLabel = isCorrect
+    ? "正确答案"
+    : isWrongSelection
+      ? "你的选择"
+      : "";
   const resultIcon = isCorrect ? "✓" : isWrongSelection ? "✕" : "";
 
   return (
@@ -114,12 +278,13 @@ function ChoiceButton({
       disabled={isAnswered || !onSelect}
       onClick={() => onSelect?.(choice.id)}
     >
-      <span className="quiz-choice-letter">{choice.id}</span>
+      <span className="quiz-choice-letter">{multi ? "☑" : choice.id}</span>
       <em>{choice.text}</em>
       {resultLabel ? (
         <span className="quiz-choice-result">
           <strong aria-hidden="true">{resultIcon}</strong>
           {resultLabel}
+          {isMissed ? "（漏选）" : ""}
         </span>
       ) : null}
     </button>
