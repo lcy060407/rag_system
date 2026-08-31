@@ -1085,6 +1085,175 @@ async def _grade_subjective(
     except Exception:
         return fallback
 
+def _normalize_question_types(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return ["single"]
+    result: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text in VALID_QUIZ_TYPES and text not in result:
+            result.append(text)
+    return result or ["single"]
+
+def _normalize_difficulty(value: Any) -> str:
+    text = str(value or "mixed").strip()
+    return text if text in {"easy", "medium", "hard", "mixed"} else "mixed"
+
+def _randomize_choices(question: QuizQuestion) -> QuizQuestion:
+    if question.question_type not in {"single", "multi"} or len(question.choices) < 3:
+        return question
+    shuffled = list(question.choices)
+    random.shuffle(shuffled)
+    new_ids = "ABCDE"
+    id_map: dict[str, str] = {}
+    new_choices: list[QuizChoice] = []
+    for index, choice in enumerate(shuffled):
+        new_id = new_ids[index]
+        id_map[choice.id] = new_id
+        new_choices.append(QuizChoice(id=new_id, text=choice.text))
+    data = _model_dump(question)
+    data["choices"] = [_model_dump(choice) for choice in new_choices]
+    data["correct_choice_id"] = id_map.get(
+        question.correct_choice_id, question.correct_choice_id
+    )
+    data["correct_choice_ids"] = [
+        id_map.get(item, item) for item in question.correct_choice_ids
+    ]
+    return QuizQuestion(**data)
+
+async def _grade_answer(
+    question: QuizQuestion,
+    answer: QuizSubmitAnswer | None,
+) -> QuizQuestionResult:
+    selected_choice_id = answer.selected_choice_id if answer else None
+    selected_choice_ids = list(answer.selected_choice_ids) if answer else []
+    text_answer = answer.text_answer if answer else None
+
+    if question.question_type == "multi":
+        is_correct = bool(selected_choice_ids) and set(selected_choice_ids) == set(
+            question.correct_choice_ids
+        )
+        return QuizQuestionResult(
+            question=question,
+            selected_choice_ids=selected_choice_ids,
+            is_correct=is_correct,
+            correct_choice_id=question.correct_choice_id,
+            explanation=question.explanation,
+        )
+    if question.question_type in {"single", "judge"}:
+        is_correct = (
+            bool(selected_choice_id)
+            and selected_choice_id == question.correct_choice_id
+        )
+        return QuizQuestionResult(
+            question=question,
+            selected_choice_id=selected_choice_id,
+            is_correct=is_correct,
+            correct_choice_id=question.correct_choice_id,
+            explanation=question.explanation,
+        )
+    if question.question_type == "fill":
+        is_correct = _fill_answer_matches(text_answer, question.standard_answers)
+        return QuizQuestionResult(
+            question=question,
+            text_answer=text_answer,
+            is_correct=is_correct,
+            explanation=question.explanation,
+        )
+    grading = await _grade_subjective(question, text_answer or "")
+    return QuizQuestionResult(
+        question=question,
+        text_answer=text_answer,
+        is_correct=None,
+        score=grading.get("score"),
+        explanation=question.explanation,
+        grading_feedback=grading,
+    )
+
+def _normalize_fill_text(text: str) -> str:
+    text = str(text or "").strip().lower()
+    for old, new in (("（", "("), ("）", ")"), ("，", ","), ("。", ".")):
+        text = text.replace(old, new)
+    return "".join(text.split())
+
+def _fill_answer_matches(
+    text_answer: str | None,
+    standard_answers: list[str],
+) -> bool:
+    if not text_answer:
+        return False
+    parts = [p for p in re.split(r"[;；\n]+", text_answer) if p.strip()]
+    if len(parts) < len(standard_answers):
+        parts = [text_answer]
+    normalized_parts = [_normalize_fill_text(part) for part in parts]
+    for index, standard in enumerate(standard_answers):
+        accepted = [
+            _normalize_fill_text(item)
+            for item in str(standard).split("|")
+            if item.strip()
+        ]
+        student = normalized_parts[index] if index < len(normalized_parts) else ""
+        if student not in accepted:
+            return False
+    return True
+
+async def _grade_subjective(
+    question: QuizQuestion,
+    student_answer: str,
+) -> dict[str, Any]:
+    fallback: dict[str, Any] = {
+        "score": None,
+        "matched_points": [],
+        "missed_points": [],
+        "error_analysis": "",
+        "suggestion": "",
+        "grading_error": True,
+    }
+    if not student_answer.strip():
+        return {
+            **fallback,
+            "score": 0,
+            "error_analysis": "未作答。",
+            "grading_error": False,
+        }
+    if not as_bool(os.getenv("ENABLE_LLM_QUIZ"), True):
+        return fallback
+    try:
+        from backend.rag.factory import build_model_functions
+
+        llm_func, _vision_func = build_model_functions()
+        raw = await llm_func(
+            SUBJECTIVE_GRADING_PROMPT.format(
+                prompt=question.prompt,
+                reference_answer=question.reference_answer,
+                scoring_points="；".join(question.scoring_points),
+                student_answer=student_answer,
+            ),
+            system_prompt=(
+                "你是严格但公正的中文助教。必须返回合法 JSON，不要输出 Markdown。"
+            ),
+            temperature=0,
+        )
+        parsed = _parse_json_object(response_content_to_text(raw))
+        score = parsed.get("score")
+        try:
+            score = max(0, min(100, int(score)))
+        except (TypeError, ValueError):
+            score = None
+        return {
+            "score": score,
+            "matched_points": [
+                str(item) for item in parsed.get("matched_points") or []
+            ][:8],
+            "missed_points": [
+                str(item) for item in parsed.get("missed_points") or []
+            ][:8],
+            "error_analysis": str(parsed.get("error_analysis") or ""),
+            "suggestion": str(parsed.get("suggestion") or ""),
+        }
+    except Exception:
+        return fallback
+
 
 
 def _fallback_questions(sources: list[QuizSource], count: int) -> list[QuizQuestion]:
@@ -1252,6 +1421,7 @@ def _wrong_question_from_row(row: dict[str, Any]) -> WrongQuestion:
         created_at=str(row["created_at"]),
         reviewed_at=row.get("reviewed_at"),
     )
+
 
 
 
