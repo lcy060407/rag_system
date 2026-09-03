@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { quizApi } from "./api";
-import { choiceText, QuestionCard } from "./QuestionCard";
+import { choiceText, InlineMarkdown, QuestionCard } from "./QuestionCard";
 import { QUIZ_TYPE_LABELS, type WrongQuestion } from "./types";
 
 type WrongBookFilter = "all" | "open" | "reviewed";
@@ -219,13 +219,18 @@ function WrongRecord({
 
       <p className="wrong-record-answer">
         你的答案：
-        {question.text_answer ||
-          choiceText(question, question.selected_choice_id) ||
-          "未作答"}
+        <InlineMarkdown
+          content={
+            question.text_answer ||
+            choiceText(question, question.selected_choice_id) ||
+            "未作答"
+          }
+        />
         {typeof question.score === "number"
           ? `（得分 ${question.score}/100）`
           : ""}
       </p>
+
     </article>
   );
 }

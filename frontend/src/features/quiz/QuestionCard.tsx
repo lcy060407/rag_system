@@ -1,6 +1,10 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { MarkdownAnswer } from "@/components/chat/MarkdownAnswer";
 import { RelatedImages } from "@/components/chat/RelatedImages";
 import {
@@ -66,6 +70,24 @@ const textInputStyle: CSSProperties = {
   fontFamily: "inherit",
   boxSizing: "border-box",
 };
+
+function normalizeMathDelimiters(content: string) {
+  return content.replace(/\$\s+/g, "$").replace(/\s+\$/g, "$");
+}
+
+export function InlineMarkdown({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[[rehypeKatex, { strict: false, throwOnError: false }]]}
+      components={{
+        p: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+      }}
+    >
+      {normalizeMathDelimiters(content)}
+    </ReactMarkdown>
+  );
+}
 
 export function QuestionCard({
   question,
@@ -169,12 +191,23 @@ export function QuestionCard({
         <div className="quiz-explanation">
           <p>
             <strong>你的答案：</strong>
-            {result?.text_answer || textAnswer || "（未作答）"}
+            <InlineMarkdown
+              content={result?.text_answer || textAnswer || "（未作答）"}
+            />
             {result?.is_correct ? " ✅" : " ❌"}
           </p>
           <p>
             <strong>标准答案：</strong>
-            {question.standard_answers.join("；") || "暂无"}
+            {question.standard_answers.length ? (
+              question.standard_answers.map((answer, answerIndex) => (
+                <span key={answerIndex}>
+                  {answerIndex > 0 ? "；" : ""}
+                  <InlineMarkdown content={answer} />
+                </span>
+              ))
+            ) : (
+              "暂无"
+            )}
           </p>
         </div>
       ) : null}
@@ -183,7 +216,9 @@ export function QuestionCard({
         <div className="quiz-explanation">
           <p>
             <strong>你的答案：</strong>
-            {result?.text_answer || textAnswer || "（未作答）"}
+            <InlineMarkdown
+              content={result?.text_answer || textAnswer || "（未作答）"}
+            />
           </p>
           {typeof score === "number" ? (
             <p>
@@ -193,25 +228,35 @@ export function QuestionCard({
           {feedback?.matched_points?.length ? (
             <p>
               <strong>已覆盖要点：</strong>
-              {feedback.matched_points.join("；")}
+              {feedback.matched_points.map((point, pointIndex) => (
+                <span key={pointIndex}>
+                  {pointIndex > 0 ? "；" : ""}
+                  <InlineMarkdown content={point} />
+                </span>
+              ))}
             </p>
           ) : null}
           {feedback?.missed_points?.length ? (
             <p>
               <strong>遗漏要点：</strong>
-              {feedback.missed_points.join("；")}
+              {feedback.missed_points.map((point, pointIndex) => (
+                <span key={pointIndex}>
+                  {pointIndex > 0 ? "；" : ""}
+                  <InlineMarkdown content={point} />
+                </span>
+              ))}
             </p>
           ) : null}
           {feedback?.error_analysis ? (
             <p>
               <strong>错误分析：</strong>
-              {feedback.error_analysis}
+              <InlineMarkdown content={feedback.error_analysis} />
             </p>
           ) : null}
           {feedback?.suggestion ? (
             <p>
               <strong>改进建议：</strong>
-              {feedback.suggestion}
+              <InlineMarkdown content={feedback.suggestion} />
             </p>
           ) : null}
           {question.reference_answer ? (
@@ -279,7 +324,9 @@ function ChoiceButton({
       onClick={() => onSelect?.(choice.id)}
     >
       <span className="quiz-choice-letter">{multi ? "☑" : choice.id}</span>
-      <em>{choice.text}</em>
+      <em>
+        <InlineMarkdown content={choice.text} />
+      </em>
       {resultLabel ? (
         <span className="quiz-choice-result">
           <strong aria-hidden="true">{resultIcon}</strong>
