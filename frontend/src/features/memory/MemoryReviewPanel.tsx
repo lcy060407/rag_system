@@ -96,22 +96,24 @@ export function MemoryReviewPanel() {
   }
 
   async function extractCandidates() {
-    if (!selectedSources.length) {
-      setError("请先选择至少一条聊天记录或错题。");
+    const targetSources = selectedSources.length ? selectedSources : uniqueSources;
+    if (!targetSources.length) {
+      setError("暂无可提取的聊天记录或错题。");
       return;
     }
+
     setIsExtracting(true);
     setError("");
     setNotice("");
     try {
       const result = await memoryApi.extract({
-        conversation_ids: selectedSources
+        conversation_ids: targetSources
           .filter((source) => source.source_type === "conversation")
           .map((source) => source.id),
-        wrong_question_ids: selectedSources
+        wrong_question_ids: targetSources
           .filter((source) => source.source_type === "wrong_question")
           .map((source) => source.id),
-        limit: Math.max(50, selectedSources.length * 4),
+        limit: Math.max(50, targetSources.length * 4),
         activate: true,
       });
       setNotice(`已启用 ${result.created_count} 条记忆。`);
@@ -362,11 +364,16 @@ function MemorySourcePicker({
           <Button
             type="button"
             variant="secondary"
-            disabled={isExtracting || isLoading || selectedCount === 0}
+            disabled={isExtracting || isLoading || sources.length === 0}
             onClick={onExtract}
           >
-            {isExtracting ? "提取中..." : "提取选中"}
+            {isExtracting
+              ? "提取中..."
+              : allSourcesSelected || selectedCount === 0
+                ? "一键提取全部"
+                : `提取选中的 ${selectedCount} 条`}
           </Button>
+
           <Button
             type="button"
             variant="ghost"
@@ -378,7 +385,12 @@ function MemorySourcePicker({
         </div>
       </div>
 
+      <p className="chat-status">
+        历史记录默认已全部自动选中，直接点「一键提取全部」即可；不想纳入的记录，取消勾选即可排除。
+      </p>
+
       <div className="memory-source-filters" role="tablist" aria-label="来源筛选">
+
         {sourceFilters.map((filter) => (
           <button
             type="button"
