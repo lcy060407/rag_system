@@ -13,6 +13,7 @@ import type {
   UserProfile,
   UserProfileInput,
 } from "./types";
+import { AbilityRadar } from "./AbilityRadar";
 
 type TextFieldKey = Exclude<
   keyof UserProfileInput,
@@ -244,6 +245,8 @@ export function ProfileEditor() {
         </div>
       </form>
 
+      <AbilityRadar />
+      
       <ProfilePromptPreview
         promptContext={promptContext}
         retrievalHints={retrievalHints}

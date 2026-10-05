@@ -70,3 +70,17 @@ export type ProfileFeedbackResponse = {
   ok: boolean;
   created_memory_candidates: UserMemory[];
 };
+
+export type AbilityDimension = {
+  key: string;
+  label: string;
+  value: number | null;
+  detail: string;
+};
+
+export type AbilityRadarResponse = {
+  dimensions: AbilityDimension[];
+  total_questions: number;
+  total_wrong: number;
+  total_attempts: number;
+};

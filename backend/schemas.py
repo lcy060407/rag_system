@@ -595,6 +595,18 @@ class WrongQuestion(BaseModel):
     created_at: str
     reviewed_at: str | None = None
 
+class AbilityDimension(BaseModel):
+    key: str
+    label: str
+    value: float | None = None
+    detail: str = ""
+
+
+class AbilityRadarResponse(BaseModel):
+    dimensions: list[AbilityDimension] = Field(default_factory=list)
+    total_questions: int = 0
+    total_wrong: int = 0
+    total_attempts: int = 0
 
 
 for _model in (ProfilePromptContextResponse, PersonalizationPreviewResponse):

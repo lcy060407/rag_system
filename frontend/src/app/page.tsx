@@ -278,9 +278,7 @@ export default function Home() {
             >
               {documents.isProcessing ? "解析中..." : "解析 / 更新知识库"}
             </Button>
-            <Button type="button" variant="secondary" onClick={() => void documents.clearRuntime()}>
-              清空后端缓存
-            </Button>
+
           </section>
         </aside>
 

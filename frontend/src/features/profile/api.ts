@@ -1,6 +1,7 @@
 import { request } from "@/lib/api";
 import type { AnswerLevel } from "@/types/chat";
 import type {
+  AbilityRadarResponse,
   PersonalizationPreviewRequest,
   PersonalizationPreviewResponse,
   ProfileFeedbackRequest,
@@ -12,6 +13,7 @@ import type {
 
 export const profileApi = {
   get: () => request<UserProfile>("/api/profile"),
+  abilityRadar: () => request<AbilityRadarResponse>("/api/profile/ability-radar"),
   save: (payload: UserProfileInput) =>
     request<UserProfile>("/api/profile", {
       method: "PUT",

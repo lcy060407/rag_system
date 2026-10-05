@@ -133,6 +133,7 @@ export function ChatPanel({
   const chatMode = conversation?.chatMode || "multimodal";
   const useProfile = conversation?.useProfile ?? true;
   const useMemory = conversation?.useMemory ?? false;
+  const personalizationEnabled = useProfile || useMemory;
   const askDisabledReason = getAskDisabledReason({
     hasConversation: Boolean(conversation),
     selectedDocumentIds,
@@ -396,34 +397,25 @@ export function ChatPanel({
             <div className="tool-card-heading">
               <span className="control-label">个性化</span>
               <span className="personalization-state">
-                {personalizationStateLabel(useProfile, useMemory)}
+                {personalizationEnabled ? "画像 + 记忆" : "已关闭"}
               </span>
             </div>
             <div className="personalization-toggle-grid">
               <button
                 type="button"
-                className={`toggle-pill ${useProfile ? "active" : ""}`}
+                className={`toggle-pill ${personalizationEnabled ? "active" : ""}`}
                 disabled={!conversation}
-                aria-pressed={useProfile}
-                onClick={() => onUseProfileChange(!useProfile)}
+                aria-pressed={personalizationEnabled}
+                onClick={() => {
+                  const next = !personalizationEnabled;
+                  onUseProfileChange(next);
+                  onUseMemoryChange(next);
+                }}
               >
                 <span className="toggle-indicator" />
                 <span>
-                  <strong>画像</strong>
-                  <small>显式偏好</small>
-                </span>
-              </button>
-              <button
-                type="button"
-                className={`toggle-pill ${useMemory ? "active" : ""}`}
-                disabled={!conversation}
-                aria-pressed={useMemory}
-                onClick={() => onUseMemoryChange(!useMemory)}
-              >
-                <span className="toggle-indicator" />
-                <span>
-                  <strong>记忆</strong>
-                  <small>审核后应用</small>
+                  <strong>个性化</strong>
+                  <small>画像 + 记忆</small>
                 </span>
               </button>
             </div>
@@ -598,12 +590,7 @@ function runtimeModeLabel(mode?: string | null) {
   return mode;
 }
 
-function personalizationStateLabel(useProfile: boolean, useMemory: boolean) {
-  if (useProfile && useMemory) return "画像 + 记忆";
-  if (useProfile) return "仅画像";
-  if (useMemory) return "仅记忆";
-  return "关闭";
-}
+
 
 function resizeQuestionInput(textarea: HTMLTextAreaElement | null) {
   if (!textarea) return;

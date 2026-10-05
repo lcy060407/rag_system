@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from backend.schemas import (
+    AbilityRadarResponse,
     PersonalizationPreviewRequest,
     PersonalizationPreviewResponse,
     ProfileFeedbackRequest,
@@ -12,6 +13,7 @@ from backend.schemas import (
     UserProfilePatch,
     UserProfilePut,
 )
+from backend.services.ability_service import compute_ability_radar
 from backend.services.feedback_service import record_profile_feedback
 from backend.services.personalization_service import personalization_preview_response
 from backend.services.profile_service import (
@@ -66,3 +68,8 @@ async def create_profile_feedback(
     payload: ProfileFeedbackRequest,
 ) -> ProfileFeedbackResponse:
     return record_profile_feedback(payload)
+
+
+@router.get("/api/profile/ability-radar", response_model=AbilityRadarResponse)
+async def read_ability_radar() -> AbilityRadarResponse:
+    return compute_ability_radar()
