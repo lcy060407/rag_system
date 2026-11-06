@@ -3,9 +3,10 @@ import "katex/dist/katex.min.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "RAG Teaching Assistant",
-  description: "Document parsing and RAG question answering workspace.",
+  title: "RAG智慧教学平台",
+  description: "面向专业课的个性化 RAG 教学平台：文档解析、知识问答、小测训练与错题闭环。",
 };
+
 
 export default function RootLayout({
   children,

@@ -11,9 +11,9 @@ export function AppShell({ children, status }: AppShellProps) {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <p className="eyebrow">RAG 助教</p>
-          <h1>文档解析与知识问答工作台</h1>
-        </div>
+          <p className="eyebrow">个性化 AI 助教</p>
+          <h1>RAG智慧教学平台</h1>
+        </div>       
         <div className="topbar-meta">
           <nav className="app-nav" aria-label="主导航">
             <Link href="/">问答</Link>
